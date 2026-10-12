@@ -15,11 +15,22 @@ import usersRoutes from "./src/Routes/users.routes.js";
 import reportRoutes from "./src/Routes/report.routes.js";
 import dashboardRoutes from "./src/Routes/dashboard.routes.js";
 import auditRoutes from "./src/Routes/audit.routes.js";
+import dns from "dns";
 
 import {
   notFoundHandler,
   errorHandler,
 } from "./src/middleware/error.middleware.js";
+
+
+// ===============================
+// DNS Resolver
+// ===============================
+
+dns.setServers([
+  "1.1.1.1",
+  "8.8.8.8",
+]);
 
 // --------------------------------------------------
 // Validate environment variables
