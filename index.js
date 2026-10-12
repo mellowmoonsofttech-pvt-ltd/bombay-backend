@@ -81,41 +81,11 @@ if (process.env.TRUST_PROXY === "1") {
 app.use(helmet());
 
 app.use(
-  cors({
-    origin(origin, callback) {
-      if (!origin) {
-        return callback(null, true);
-      }
-
-      const normalizedOrigin = origin.replace(/\/+$/, "");
-
-      if (allowedOrigins.includes(normalizedOrigin)) {
-        return callback(null, true);
-      }
-
-      return callback(new Error("Origin not allowed by CORS"));
-    },
-
-    credentials: true,
-
-    methods: [
-      "GET",
-      "POST",
-      "PUT",
-      "PATCH",
-      "DELETE",
-      "OPTIONS",
-    ],
-
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-    ],
-
-    maxAge: 600,
-  })
+    cors({
+        origin: true,
+        credentials: true,
+    })
 );
-
 // Rate limiter
 app.use(
   rateLimit({
