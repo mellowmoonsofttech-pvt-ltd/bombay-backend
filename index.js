@@ -41,6 +41,14 @@ for (const key of requiredEnv) {
   }
 }
 
+app.use(
+    cors({
+        origin: true,
+        credentials: true,
+    })
+);
+
+
 if (process.env.JWT_SECRET.length < 32) {
   throw new Error(
     "JWT_SECRET must be at least 32 characters long."
@@ -80,13 +88,6 @@ if (process.env.TRUST_PROXY === "1") {
 // Security middleware
 app.use(helmet());
 
-//Cors middleware
-app.use(
-    cors({
-        origin: true,
-        credentials: true,
-    })
-);
 // Rate limiter
 app.use(
   rateLimit({
