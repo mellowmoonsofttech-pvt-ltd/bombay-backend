@@ -80,6 +80,7 @@ if (process.env.TRUST_PROXY === "1") {
 // Security middleware
 app.use(helmet());
 
+//Cors middleware
 app.use(
     cors({
         origin: true,
