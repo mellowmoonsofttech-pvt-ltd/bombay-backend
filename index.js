@@ -1,3 +1,4 @@
+
 import "dotenv/config";
 
 import express from "express";
@@ -22,15 +23,12 @@ import {
   errorHandler,
 } from "./src/middleware/error.middleware.js";
 
-// DNS Resolver
+// DNS resolver
 dns.setServers(["1.1.1.1", "8.8.8.8"]);
 
-// Validate environment variables
-const requiredEnv = [
-  "MONGODB_URI",
-  "JWT_SECRET",
-  "CORS_ORIGIN",
-];
+// Required environment variables
+// CORS_ORIGIN is optional.
+const requiredEnv = ["MONGODB_URI", "JWT_SECRET"];
 
 for (const key of requiredEnv) {
   if (
@@ -41,39 +39,8 @@ for (const key of requiredEnv) {
   }
 }
 
-app.use(
-    cors({
-        origin: true,
-        credentials: true,
-    })
-);
-
-
 if (process.env.JWT_SECRET.length < 32) {
-  throw new Error(
-    "JWT_SECRET must be at least 32 characters long."
-  );
-}
-
-// CORS configuration
-const allowedOrigins = process.env.CORS_ORIGIN
-  .split(",")
-  .map((origin) => origin.trim().replace(/\/+$/, ""))
-  .filter(Boolean);
-
-if (allowedOrigins.length === 0) {
-  throw new Error(
-    "CORS_ORIGIN must contain at least one frontend origin."
-  );
-}
-
-if (
-  process.env.NODE_ENV === "production" &&
-  allowedOrigins.includes("*")
-) {
-  throw new Error(
-    "Wildcard CORS is not allowed in production."
-  );
+  throw new Error("JWT_SECRET must be at least 32 characters long.");
 }
 
 // Initialize Express
@@ -85,6 +52,45 @@ if (process.env.TRUST_PROXY === "1") {
   app.set("trust proxy", 1);
 }
 
+// CORS configuration
+// CORS_ORIGIN is optional. If configured, only listed origins are allowed.
+const allowedOrigins = (process.env.CORS_ORIGIN || "")
+  .split(",")
+  .map((origin) => origin.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
+
+if (
+  process.env.NODE_ENV === "production" &&
+  allowedOrigins.includes("*")
+) {
+  throw new Error("Wildcard CORS is not allowed in production.");
+}
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      // Allow requests without an Origin header.
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      // Without configured origins, do not grant cross-origin
+      // browser access.
+      if (allowedOrigins.length === 0) {
+        return callback(null, false);
+      }
+
+      const normalizedOrigin = origin.replace(/\/+$/, "");
+
+      return callback(
+        null,
+        allowedOrigins.includes(normalizedOrigin)
+      );
+    },
+    credentials: true,
+  })
+);
+
 // Security middleware
 app.use(helmet());
 
@@ -95,7 +101,6 @@ app.use(
     limit: 200,
     standardHeaders: "draft-8",
     legacyHeaders: false,
-
     message: {
       success: false,
       message: "Too many requests. Please try again later.",
@@ -117,6 +122,40 @@ app.use(
     limit: "20kb",
   })
 );
+
+// MongoDB connection management
+let dbConnectionPromise;
+
+async function ensureDatabaseConnection() {
+  if (!dbConnectionPromise) {
+    dbConnectionPromise = connectDB().catch((error) => {
+      dbConnectionPromise = undefined;
+      throw error;
+    });
+  }
+
+  await dbConnectionPromise;
+}
+
+// Database connection middleware for API requests.
+// Registered before API routes so the database is ready first.
+app.use("/api", async (req, res, next) => {
+  try {
+    await ensureDatabaseConnection();
+    return next();
+  } catch (error) {
+    console.error("MongoDB connection failed:", error.message);
+
+    if (!res.headersSent) {
+      return res.status(503).json({
+        success: false,
+        message: "Database temporarily unavailable",
+      });
+    }
+
+    return next(error);
+  }
+});
 
 // Root route
 app.get("/", (req, res) => {
@@ -145,37 +184,6 @@ app.use("/api/reports", reportRoutes);
 app.use("/api/audit", auditRoutes);
 app.use("/api", dashboardRoutes);
 
-// MongoDB connection management
-let dbConnectionPromise;
-
-async function ensureDatabaseConnection() {
-  if (!dbConnectionPromise) {
-    dbConnectionPromise = connectDB().catch((error) => {
-      dbConnectionPromise = undefined;
-      throw error;
-    });
-  }
-
-  await dbConnectionPromise;
-}
-
-// Ensure database connection before processing requests
-app.use(async (req, res, next) => {
-  try {
-    await ensureDatabaseConnection();
-    return next();
-  } catch (error) {
-    console.error("MongoDB connection failed:", error.message);
-
-    if (!res.headersSent) {
-      return res.status(503).json({
-        success: false,
-        message: "Database temporarily unavailable",
-      });
-    }
-  }
-});
-
 // Error handlers must be registered last
 app.use(notFoundHandler);
 app.use(errorHandler);
@@ -192,20 +200,8 @@ if (!process.env.VERCEL) {
       await ensureDatabaseConnection();
 
       const server = app.listen(port, () => {
-        console.log("----------------------------------------");
-        console.log("Bombay Suiting & Shirting Backend");
-        console.log(`Port: ${port}`);
-        console.log(`Health: http://localhost:${port}/api/health`);
-        console.log("MongoDB: Connected");
-        console.log("Billing routes: /api");
-        console.log("Product routes: /api");
-        console.log("Customer routes: /api/customers");
-        console.log("Purchase routes: /api/purchases");
-        console.log("User routes: /api/users");
-        console.log("Report routes: /api/reports");
-        console.log("Audit routes: /api/audit");
-        console.log("Dashboard route: /api/dashboard");
-        console.log("----------------------------------------");
+        // Only a short startup message; no route banner.
+        console.log(`Backend running on port ${port}`);
       });
 
       server.on("error", (error) => {
