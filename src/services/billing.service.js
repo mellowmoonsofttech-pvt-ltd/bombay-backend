@@ -1,4 +1,3 @@
-
 import mongoose from "mongoose";
 import Product from "../model/Product.js";
 import Settings from "../model/Settings.js";
@@ -12,7 +11,7 @@ function httpError(statusCode, message) {
 }
 
 function money(value) {
-  return Math.round((value + Number.EPSILON) * 100) / 100;
+  return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
 // --------------------------------------------------
@@ -27,7 +26,6 @@ async function upsertInvoiceCustomer(input, user) {
     throw httpError(400, "Customer name and mobile are required");
   }
 
-  // If the invoice explicitly references a customer, use that record.
   if (input.customer_id) {
     if (!mongoose.isValidObjectId(input.customer_id)) {
       throw httpError(400, "Invalid customer ID");
@@ -46,7 +44,6 @@ async function upsertInvoiceCustomer(input, user) {
     return customer;
   }
 
-  // Reuse a customer with the same mobile number.
   const existing = await Customer.findOne({ mobile });
 
   if (existing) {
@@ -55,7 +52,6 @@ async function upsertInvoiceCustomer(input, user) {
     return existing;
   }
 
-  // Create a new customer if no matching mobile exists.
   try {
     return await Customer.create({
       name,
@@ -65,7 +61,6 @@ async function upsertInvoiceCustomer(input, user) {
         : null,
     });
   } catch (error) {
-    // Handle a duplicate-key race if a unique mobile index exists.
     if (error.code === 11000) {
       const customer = await Customer.findOne({ mobile });
 
@@ -84,37 +79,61 @@ async function upsertInvoiceCustomer(input, user) {
 // BILLING SETTINGS
 // --------------------------------------------------
 
-async function getBillingSettings() {
-  const settings = await Settings.findOne({ key: "billing" }).lean();
+async function ensureBillingSettings() {
+  let settings = await Settings.findOne({ key: "billing" });
 
-  return (
-    settings || {
-      default_price_type: "retail",
-      allow_discount: true,
-      billing_can_discount: true,
-      allow_price_override: false,
-      billing_can_override: false,
-      allow_negative_stock: false,
-      max_discount_percent: 10,
-      max_discount_amount: 0,
-      payment_methods: ["Cash", "UPI", "Card", "Bank Transfer"],
+  if (!settings) {
+    try {
+      settings = await Settings.create({
+        key: "billing",
+        invoice_prefix: "BSS-",
+        next_invoice_no: 1,
+      });
+    } catch (error) {
+      // Another request may have created the unique document.
+      if (error.code !== 11000) {
+        throw error;
+      }
+
+      settings = await Settings.findOne({ key: "billing" });
     }
-  );
+  }
+
+  if (!settings) {
+    throw httpError(500, "Unable to initialize billing settings");
+  }
+
+  // Repair old documents where the counter is missing or invalid.
+  if (
+    !Number.isSafeInteger(settings.next_invoice_no) ||
+    settings.next_invoice_no < 1
+  ) {
+    settings.next_invoice_no = 1;
+    await settings.save();
+  }
+
+  return settings;
 }
+
+async function getBillingSettings() {
+  const settings = await ensureBillingSettings();
+  return settings.toObject();
+}
+
 export async function getSettings() {
   const settings = await getBillingSettings();
 
   return {
-    business_name: settings.business_name ?? "Bombay Suiting & Shirting",
+    business_name:
+      settings.business_name ?? "Bombay Suiting & Shirting",
     address: settings.address ?? "",
     phone: settings.phone ?? "",
     email: settings.email ?? "",
     gstin: settings.gstin ?? "",
-
     invoice_prefix: settings.invoice_prefix ?? "BSS-",
     next_invoice_no: settings.next_invoice_no ?? 1,
-    invoice_footer: settings.invoice_footer ?? "Thank you for your business!",
-
+    invoice_footer:
+      settings.invoice_footer ?? "Thank you for your business!",
     default_price_type: settings.default_price_type ?? "retail",
     allow_discount: settings.allow_discount ?? true,
     billing_can_discount: settings.billing_can_discount ?? true,
@@ -124,17 +143,17 @@ export async function getSettings() {
     low_stock_alerts: settings.low_stock_alerts ?? true,
     max_discount_percent: settings.max_discount_percent ?? 10,
     max_discount_amount: settings.max_discount_amount ?? 0,
-    payment_methods: settings.payment_methods ?? [
-      "Cash",
-      "UPI",
-      "Card",
-      "Credit",
-      "Other"
-    ]
+    payment_methods: settings.payment_methods?.length
+      ? settings.payment_methods
+      : ["Cash", "UPI", "Card", "Credit", "Other"],
   };
 }
 
+// Atomically reserve the next invoice number.
+// The first invoice uses the configured next_invoice_no.
 async function generateInvoiceNumber() {
+  await ensureBillingSettings();
+
   const settings = await Settings.findOneAndUpdate(
     {
       key: "billing",
@@ -145,25 +164,22 @@ async function generateInvoiceNumber() {
     },
     {
       new: false,
-      projection: {
-        invoice_prefix: 1,
-        next_invoice_no: 1,
-      },
+      runValidators: true,
     }
   ).lean();
 
   if (!settings) {
     throw httpError(
       500,
-      "Billing settings not found or invoice number is invalid"
+      "Could not reserve invoice number. Check billing settings."
     );
   }
 
-  const prefix = String(settings.invoice_prefix ?? "BSS-");
   const number = Number(settings.next_invoice_no);
+  const prefix = String(settings.invoice_prefix ?? "BSS-");
 
   if (!Number.isSafeInteger(number) || number < 1) {
-    throw httpError(500, "Invalid next invoice number in settings");
+    throw httpError(500, "Invalid invoice number counter");
   }
 
   return `${prefix}${number}`;
@@ -175,6 +191,10 @@ async function generateInvoiceNumber() {
 
 export async function getProducts(search = "") {
   const filter = { is_active: true };
+
+  if (typeof search !== "string") {
+    throw httpError(400, "Invalid product search");
+  }
 
   if (search.trim()) {
     const escaped = search
@@ -199,7 +219,7 @@ export async function getProducts(search = "") {
 }
 
 // --------------------------------------------------
-// STOCK HELPERS - NO TRANSACTIONS
+// STOCK HELPERS
 // --------------------------------------------------
 
 function getStockChanges(items) {
@@ -244,7 +264,9 @@ async function applyStockChanges(items, direction, options = {}) {
       const filter = { _id: stock.productId };
 
       if (delta < 0 && !allowNegativeStock) {
-        filter[stock.stockField] = { $gte: Math.abs(delta) };
+        filter[stock.stockField] = {
+          $gte: Math.abs(delta),
+        };
       }
 
       const result = await Product.updateOne(filter, {
@@ -348,14 +370,20 @@ async function executeInvoice(input, user) {
     !["admin", "manager"].includes(user.role) &&
     !settings.billing_can_discount
   ) {
-    throw httpError(403, "You do not have permission to apply a discount");
+    throw httpError(
+      403,
+      "You do not have permission to apply a discount"
+    );
   }
 
   if (
     discountType === "percent" &&
     discountValue > settings.max_discount_percent
   ) {
-    throw httpError(400, "Discount percentage exceeds the configured limit");
+    throw httpError(
+      400,
+      "Discount percentage exceeds the configured limit"
+    );
   }
 
   if (
@@ -363,7 +391,10 @@ async function executeInvoice(input, user) {
     settings.max_discount_amount > 0 &&
     discountValue > settings.max_discount_amount
   ) {
-    throw httpError(400, "Discount amount exceeds the configured limit");
+    throw httpError(
+      400,
+      "Discount amount exceeds the configured limit"
+    );
   }
 
   if (discountType === "none" && discountValue !== 0) {
@@ -408,7 +439,10 @@ async function executeInvoice(input, user) {
   );
 
   if (productMap.size !== uniqueIds.length) {
-    throw httpError(400, "One or more products do not exist or are inactive");
+    throw httpError(
+      400,
+      "One or more products do not exist or are inactive"
+    );
   }
 
   let subtotal = 0;
@@ -434,7 +468,10 @@ async function executeInvoice(input, user) {
     }
 
     if (!canOverrideRate && rate !== baseRate) {
-      throw httpError(403, `Rate override is not allowed for ${product.name}`);
+      throw httpError(
+        403,
+        `Rate override is not allowed for ${product.name}`
+      );
     }
 
     const amount = money(rate * item.quantity);
@@ -504,7 +541,9 @@ async function executeInvoice(input, user) {
       }
     }
 
-    const taxableAmount = money(Math.max(0, item.amount - itemDiscount));
+    const taxableAmount = money(
+      Math.max(0, item.amount - itemDiscount)
+    );
 
     item.discount_amount = itemDiscount;
     item.taxable_amount = taxableAmount;
@@ -528,9 +567,7 @@ async function executeInvoice(input, user) {
 
     stockDebited = true;
 
-const invoiceNumber = await generateInvoiceNumber();
-
-    // Save/reuse the customer and link the invoice to its MongoDB ID.
+    const invoiceNumber = await generateInvoiceNumber();
     const customer = await upsertInvoiceCustomer(input, user);
 
     const invoiceData = {
@@ -549,7 +586,9 @@ const invoiceNumber = await generateInvoiceNumber();
       grand_total: grandTotal,
       total: grandTotal,
       items: invoiceItems,
-      created_by: mongoose.isValidObjectId(user.id) ? user.id : null,
+      created_by: mongoose.isValidObjectId(user?.id)
+        ? user.id
+        : null,
     };
 
     const [invoice] = await Invoice.create([invoiceData]);
@@ -572,10 +611,6 @@ const invoiceNumber = await generateInvoiceNumber();
     throw error;
   }
 }
-
-// --------------------------------------------------
-// CREATE INVOICE API SERVICE
-// --------------------------------------------------
 
 export async function createInvoice(input, user) {
   return executeInvoice(input, user);
@@ -668,7 +703,7 @@ export async function getInvoices({ from, to, search = "" } = {}) {
     completed_invoices: completedInvoices.length,
     total_sales: money(
       completedInvoices.reduce(
-        (sum, invoice) => sum + invoice.grand_total,
+        (sum, invoice) => sum + Number(invoice.grand_total ?? invoice.total ?? 0),
         0
       )
     ),
@@ -711,7 +746,6 @@ export async function editInvoice(id, input, user) {
 
   try {
     replacement = await executeInvoice(input, user);
-
     const replacementData = replacement.toObject();
 
     for (const key of [
@@ -780,6 +814,10 @@ export async function cancelInvoice(id, cancelReason = "", user) {
 
   if (invoice.status === "cancelled") {
     throw httpError(409, "Invoice is already cancelled");
+  }
+
+  if (invoice.status !== "completed") {
+    throw httpError(409, "Only completed invoices can be cancelled");
   }
 
   const originalStatus = invoice.status;
