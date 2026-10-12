@@ -3,6 +3,7 @@ import { Router } from "express";
 
 import {
   settingsController,
+  updateSettingsController,
   productsController,
   createInvoiceController,
   getInvoiceController,
@@ -39,6 +40,7 @@ const billingRoles = allowRoles(
 
 const managerRoles = allowRoles("admin", "manager");
 
+// Read billing settings
 router.get(
   "/settings",
   authenticate,
@@ -46,6 +48,15 @@ router.get(
   settingsController
 );
 
+// Update billing settings — admin and manager only
+router.put(
+  "/settings",
+  authenticate,
+  managerRoles,
+  updateSettingsController
+);
+
+// Products
 router.get(
   "/products",
   authenticate,
@@ -54,7 +65,7 @@ router.get(
   productsController
 );
 
-// Keep the list route before /invoices/:id.
+// Keep the invoice list route before /invoices/:id
 router.get(
   "/invoices",
   authenticate,
@@ -62,6 +73,7 @@ router.get(
   getInvoicesController
 );
 
+// Create invoice
 router.post(
   "/invoices",
   authenticate,
@@ -70,6 +82,7 @@ router.post(
   createInvoiceController
 );
 
+// Edit invoice
 router.put(
   "/invoices/:id",
   authenticate,
@@ -79,6 +92,7 @@ router.put(
   editInvoiceController
 );
 
+// Cancel invoice
 router.patch(
   "/invoices/:id/cancel",
   authenticate,
@@ -87,6 +101,7 @@ router.patch(
   cancelInvoiceController
 );
 
+// Delete invoice
 router.delete(
   "/invoices/:id",
   authenticate,
@@ -95,6 +110,7 @@ router.delete(
   deleteInvoiceController
 );
 
+// Get invoice by ID
 router.get(
   "/invoices/:id",
   authenticate,
@@ -103,6 +119,7 @@ router.get(
   getInvoiceController
 );
 
+// Admin login
 router.post(
   "/auth/admin-login",
   adminLoginController
