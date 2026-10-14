@@ -496,6 +496,7 @@ async function executeInvoice(input, user) {
       quantity: item.quantity,
       piece_quantity: item.piece_quantity || 0,
       rate,
+      purchase_rate: product.purchase_rate,
       original_rate: baseRate,
       amount,
       discount_amount: 0,

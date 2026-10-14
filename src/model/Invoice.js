@@ -41,6 +41,10 @@
         required: true,
         min: 0,
       },
+      purchase_rate: {
+        type: Number,
+        min: 0,
+      },
       original_rate: {
         type: Number,
         default: 0,

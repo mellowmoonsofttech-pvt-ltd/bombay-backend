@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import Invoice from "../model/Invoice.js";
+import Product from "../model/Product.js";
 
 function parseDateRange(from, to) {
   if (!from || !to) {
@@ -10,6 +11,8 @@ function parseDateRange(from, to) {
 
   const start = new Date(from);
   const end = new Date(to);
+  const dateOnlyEnd =
+    typeof to === "string" && /^\d{4}-\d{2}-\d{2}$/.test(to);
 
   if (
     Number.isNaN(start.getTime()) ||
@@ -21,7 +24,76 @@ function parseDateRange(from, to) {
     throw error;
   }
 
+  if (dateOnlyEnd) {
+    end.setUTCHours(23, 59, 59, 999);
+  }
+
   return { start, end };
+}
+
+async function calculateTotalProfit(invoices) {
+  const completed = invoices.filter(
+    (invoice) => invoice.status === "completed"
+  );
+  const itemsWithoutCostSnapshot = completed.flatMap((invoice) =>
+    (invoice.items || []).filter(
+      (item) => !Number.isFinite(item.purchase_rate)
+    )
+  );
+  const productIds = [
+    ...new Set(
+      itemsWithoutCostSnapshot
+        .map((item) => item.product_id?.toString())
+        .filter(Boolean)
+    ),
+  ];
+  const products = productIds.length
+    ? await Product.find({ _id: { $in: productIds } })
+        .select("_id purchase_rate")
+        .lean()
+    : [];
+  const purchaseRates = new Map(
+    products.map((product) => [
+      product._id.toString(),
+      Number(product.purchase_rate),
+    ])
+  );
+
+  let totalProfit = 0;
+
+  for (const invoice of completed) {
+    for (const item of invoice.items || []) {
+      const purchaseRate = Number.isFinite(item.purchase_rate)
+        ? item.purchase_rate
+        : purchaseRates.get(item.product_id?.toString());
+
+      if (!Number.isFinite(purchaseRate)) {
+        const error = new Error(
+          `Purchase cost is unavailable for product ${item.product_name || item.product_id}.`
+        );
+        error.statusCode = 500;
+        throw error;
+      }
+
+      const salesAmount =
+        Number(item.amount || 0) - Number(item.discount_amount || 0);
+      totalProfit += salesAmount - purchaseRate * Number(item.quantity || 0);
+    }
+  }
+
+  return Number(totalProfit.toFixed(2));
+}
+
+export async function getTotalProfit({ from, to }) {
+  const { start, end } = parseDateRange(from, to);
+  const invoices = await Invoice.find({
+    createdAt: { $gte: start, $lte: end },
+    status: "completed",
+  })
+    .select("items")
+    .lean();
+
+  return calculateTotalProfit(invoices);
 }
 
 export async function getReportData({ from, to }) {
@@ -51,6 +123,7 @@ export async function getReportData({ from, to }) {
     netSales: 0,
     discounts: 0,
     gst: 0,
+    totalProfit: await calculateTotalProfit(invoices),
   };
 
   for (const invoice of completed) {
