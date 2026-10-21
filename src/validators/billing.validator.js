@@ -5,6 +5,29 @@ export const invoiceIdSchema = z.object({
   id: z.string().regex(/^[a-f\d]{24}$/i, "Invalid invoice ID"),
 });
 
+const monetaryAmount = z
+  .number()
+  .finite()
+  .max(100000000)
+  .refine(
+    (amount) => Math.abs(amount * 100 - Math.round(amount * 100)) < 0.000001,
+    "Payment amount must not have more than two decimal places"
+  );
+
+export const invoicePaymentSchema = z.union([
+  z
+    .object({
+      amount: monetaryAmount.positive(),
+      idempotency_key: z.string().trim().min(1).max(128).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      paid_amount: monetaryAmount.min(0),
+    })
+    .strict(),
+]);
+
 export const productQuerySchema = z.object({
   search: z.string().trim().max(100).optional().default(""),
 });

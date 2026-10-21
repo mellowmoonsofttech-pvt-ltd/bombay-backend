@@ -188,6 +188,41 @@
         default: null,
         maxlength: 500,
       },
+      paid_amount: {
+        type: Number,
+        min: 0,
+        default: 0,
+      },
+      payments: {
+        type: [
+          new mongoose.Schema(
+            {
+              amount: {
+                type: Number,
+                required: true,
+                min: 0.01,
+              },
+              paid_at: {
+                type: Date,
+                required: true,
+                default: Date.now,
+              },
+              recorded_by: {
+                type: mongoose.Schema.Types.ObjectId,
+                ref: "Admin",
+                required: true,
+              },
+              idempotency_key: {
+                type: String,
+                trim: true,
+                maxlength: 128,
+              },
+            },
+            { _id: true, strict: "throw" }
+          ),
+        ],
+        default: [],
+      },
     },
     {
       timestamps: true,

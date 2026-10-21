@@ -8,6 +8,9 @@ import {
   editInvoice,
   cancelInvoice,
   deleteInvoice,
+  getInvoicePaidAmounts,
+  getInvoicePayments,
+  recordInvoicePayment,
 } from "../services/billing.service.js";
 
 import Settings from "../model/Settings.js";
@@ -166,6 +169,50 @@ export async function getInvoicesController(req, res, next) {
       count: result.invoices.length,
       summary: result.summary,
       data: result.invoices,
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+export async function getInvoicePaidAmountsController(req, res, next) {
+  try {
+    const data = await getInvoicePaidAmounts();
+
+    return res.status(200).json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+export async function getInvoicePaymentsController(req, res, next) {
+  try {
+    const data = await getInvoicePayments(req.params.id);
+
+    return res.status(200).json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+export async function recordInvoicePaymentController(req, res, next) {
+  try {
+    const data = await recordInvoicePayment(
+      req.params.id,
+      req.validated.body,
+      req.user.id
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "Payment recorded successfully",
+      data,
     });
   } catch (error) {
     return next(error);

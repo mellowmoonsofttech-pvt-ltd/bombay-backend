@@ -2,37 +2,62 @@ import { Router } from "express";
 
 import {
   getCustomers,
+  getPendingCustomers,
   getCustomer,
   addCustomer,
   editCustomer,
   removeCustomer,
 } from "../controller/customer.controller.js";
 
-import { validateCustomer } from "../validators/customer.validator.js";
+import {
+  customerIdSchema,
+  validateCustomer,
+} from "../validators/customer.validator.js";
 
 import { authenticate, allowRoles } from "../middleware/auth.middleware.js";
+import { validateRequest } from "../middleware/validate.middleware.js";
 
 const router = Router();
 
 // Require a valid JWT for all customer endpoints
 router.use(authenticate);
 
-// Customer management is restricted to admins
-router.use(allowRoles("admin"));
-
 // GET /api/customers
-router.get("/", getCustomers);
+router.get("/", allowRoles("admin", "billing"), getCustomers);
+
+// GET /api/customers/pending
+router.get(
+  "/pending",
+  allowRoles("admin", "billing"),
+  getPendingCustomers
+);
 
 // GET /api/customers/:id
-router.get("/:id", getCustomer);
+router.get(
+  "/:id",
+  allowRoles("admin", "billing"),
+  validateRequest(customerIdSchema, "params"),
+  getCustomer
+);
 
 // POST /api/customers
-router.post("/", validateCustomer, addCustomer);
+router.post("/", allowRoles("admin"), validateCustomer, addCustomer);
 
 // PUT /api/customers/:id
-router.put("/:id", validateCustomer, editCustomer);
+router.put(
+  "/:id",
+  allowRoles("admin"),
+  validateRequest(customerIdSchema, "params"),
+  validateCustomer,
+  editCustomer
+);
 
 // DELETE /api/customers/:id
-router.delete("/:id", removeCustomer);
+router.delete(
+  "/:id",
+  allowRoles("admin"),
+  validateRequest(customerIdSchema, "params"),
+  removeCustomer
+);
 
 export default router;

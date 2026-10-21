@@ -11,6 +11,9 @@ import {
   editInvoiceController,
   cancelInvoiceController,
   deleteInvoiceController,
+  getInvoicePaidAmountsController,
+  getInvoicePaymentsController,
+  recordInvoicePaymentController,
 } from "../controller/billing.controller.js";
 
 import {
@@ -25,6 +28,7 @@ import { adminLoginController } from "../controller/auth.controller.js";
 import {
   createInvoiceSchema,
   invoiceIdSchema,
+  invoicePaymentSchema,
   productQuerySchema,
 } from "../validators/billing.validator.js";
 
@@ -71,6 +75,32 @@ router.get(
   authenticate,
   billingRoles,
   getInvoicesController
+);
+
+// Invoice payment totals and histories are visible to billing roles.
+router.get(
+  "/invoice-payments",
+  authenticate,
+  billingRoles,
+  getInvoicePaidAmountsController
+);
+
+router.get(
+  "/invoices/:id/payments",
+  authenticate,
+  billingRoles,
+  validateRequest(invoiceIdSchema, "params"),
+  getInvoicePaymentsController
+);
+
+// Only admins can record customer payments.
+router.post(
+  "/invoices/:id/payments",
+  authenticate,
+  allowRoles("admin"),
+  validateRequest(invoiceIdSchema, "params"),
+  validateRequest(invoicePaymentSchema),
+  recordInvoicePaymentController
 );
 
 // Create invoice

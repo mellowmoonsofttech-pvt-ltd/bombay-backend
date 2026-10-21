@@ -14,6 +14,10 @@ const customerSchema = new mongoose.Schema(
       default: "",
       maxlength: [15, "Mobile cannot exceed 15 characters"],
     },
+    normalized_mobile: {
+      type: String,
+      select: false,
+    },
     created_by: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -25,5 +29,14 @@ const customerSchema = new mongoose.Schema(
 
 customerSchema.index({ name: 1 });
 customerSchema.index({ mobile: 1 });
+customerSchema.index(
+  { normalized_mobile: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      normalized_mobile: { $type: "string" },
+    },
+  }
+);
 
 export default mongoose.model("Customer", customerSchema);

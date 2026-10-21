@@ -1,5 +1,7 @@
+import { z } from "zod";
+
 export const validateCustomer = (req, res, next) => {
-  const { name, mobile = "" } = req.body;
+  const { name, mobile } = req.body ?? {};
 
   if (typeof name !== "string" || !name.trim()) {
     return res.status(400).json({
@@ -15,18 +17,22 @@ export const validateCustomer = (req, res, next) => {
     });
   }
 
-  if (typeof mobile !== "string") {
+  if (mobile !== undefined && typeof mobile !== "string") {
     return res.status(400).json({
       success: false,
       message: "Mobile must be a string",
     });
   }
 
-  const normalizedMobile = mobile.trim();
+  const normalizedMobile =
+    typeof mobile === "string" ? mobile.trim() : undefined;
 
   if (
+    normalizedMobile !== undefined &&
     normalizedMobile &&
-    !/^[+0-9()\-\s]{7,15}$/.test(normalizedMobile)
+    !/^(?=(?:\D*\d){7,15}\D*$)[+0-9()\-\s]{7,15}$/.test(
+      normalizedMobile
+    )
   ) {
     return res.status(400).json({
       success: false,
@@ -35,7 +41,13 @@ export const validateCustomer = (req, res, next) => {
   }
 
   req.body.name = name.trim();
-  req.body.mobile = normalizedMobile;
+  if (normalizedMobile !== undefined) {
+    req.body.mobile = normalizedMobile;
+  }
 
   next();
 };
+
+export const customerIdSchema = z.object({
+  id: z.string().regex(/^[a-f\d]{24}$/i, "Invalid customer ID"),
+});

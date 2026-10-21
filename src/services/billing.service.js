@@ -720,6 +720,224 @@ export async function getInvoices({ from, to, search = "" } = {}) {
   };
 }
 
+function getRecordedPaymentTotal(payments = []) {
+  return money(
+    payments.reduce(
+      (sum, payment) => sum + Number(payment.amount || 0),
+      0
+    )
+  );
+}
+
+function paymentDTO(payment) {
+  return {
+    id: String(payment._id),
+    amount: Number(payment.amount),
+    paid_at: payment.paid_at,
+    recorded_by: payment.recorded_by
+      ? String(payment.recorded_by)
+      : null,
+    idempotency_key: payment.idempotency_key || null,
+  };
+}
+
+export async function getInvoicePaidAmounts() {
+  const invoices = await Invoice.find({ status: "completed" })
+    .select("_id payments")
+    .lean();
+
+  return Object.fromEntries(
+    invoices.map((invoice) => [
+      String(invoice._id),
+      getRecordedPaymentTotal(invoice.payments),
+    ])
+  );
+}
+
+export async function getInvoicePayments(id) {
+  if (!mongoose.isValidObjectId(id)) {
+    throw httpError(400, "Invalid invoice ID");
+  }
+
+  const invoice = await Invoice.findById(id)
+    .select("invoice_number status grand_total total payments")
+    .lean();
+
+  if (!invoice) {
+    throw httpError(404, "Invoice not found");
+  }
+
+  const paidAmount = getRecordedPaymentTotal(invoice.payments);
+  const total = Number(invoice.grand_total ?? invoice.total ?? 0);
+
+  if (!Number.isFinite(total) || total < 0) {
+    throw httpError(500, "Invoice has an invalid total");
+  }
+
+  return {
+    invoice_id: String(invoice._id),
+    invoice_number: invoice.invoice_number,
+    status: invoice.status,
+    total,
+    paid_amount: paidAmount,
+    pending_amount: money(Math.max(0, total - paidAmount)),
+    payments: (invoice.payments || []).map(paymentDTO),
+  };
+}
+
+export async function recordInvoicePayment(id, input, userId) {
+  if (!mongoose.isValidObjectId(id)) {
+    throw httpError(400, "Invalid invoice ID");
+  }
+
+  if (!mongoose.isValidObjectId(userId)) {
+    throw httpError(401, "Authentication required");
+  }
+
+  if (
+    input.amount !== undefined &&
+    (!Number.isFinite(input.amount) || input.amount <= 0)
+  ) {
+    throw httpError(400, "Payment amount must be a positive monetary value");
+  }
+
+  const idempotencyKey = input.idempotency_key;
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const invoice = await Invoice.findById(id)
+      .select(
+        "invoice_number status grand_total total paid_amount payments"
+      )
+      .lean();
+
+    if (!invoice) {
+      throw httpError(404, "Invoice not found");
+    }
+
+    if (invoice.status !== "completed") {
+      throw httpError(409, "Payments can only be recorded for completed invoices");
+    }
+
+    const duplicate = idempotencyKey
+      ? (invoice.payments || []).find(
+          (payment) => payment.idempotency_key === idempotencyKey
+        )
+      : null;
+
+    if (duplicate) {
+      const paidAmount = getRecordedPaymentTotal(invoice.payments);
+      const total = Number(invoice.grand_total ?? invoice.total ?? 0);
+
+      if (!Number.isFinite(total) || total < 0) {
+        throw httpError(500, "Invoice has an invalid total");
+      }
+
+      return {
+        invoice_id: String(invoice._id),
+        invoice_number: invoice.invoice_number,
+        total,
+        paid_amount: paidAmount,
+        pending_amount: money(Math.max(0, total - paidAmount)),
+        payment: paymentDTO(duplicate),
+        payments: (invoice.payments || []).map(paymentDTO),
+        duplicate: true,
+      };
+    }
+
+    const paidBefore = getRecordedPaymentTotal(invoice.payments);
+    const total = Number(invoice.grand_total ?? invoice.total ?? 0);
+
+    if (!Number.isFinite(total) || total < 0) {
+      throw httpError(500, "Invoice has an invalid total");
+    }
+
+    const amount =
+      input.paid_amount !== undefined
+        ? money(input.paid_amount - paidBefore)
+        : money(input.amount);
+
+    if (input.paid_amount !== undefined && amount < 0) {
+      throw httpError(400, "Paid amount cannot be lower than recorded payments");
+    }
+
+    if (amount === 0) {
+      return {
+        invoice_id: String(invoice._id),
+        invoice_number: invoice.invoice_number,
+        total,
+        paid_amount: paidBefore,
+        pending_amount: money(Math.max(0, total - paidBefore)),
+        payment: null,
+        payments: (invoice.payments || []).map(paymentDTO),
+        duplicate: true,
+      };
+    }
+
+    const pendingBefore = money(Math.max(0, total - paidBefore));
+
+    if (amount > pendingBefore) {
+      throw httpError(400, "Payment cannot exceed the remaining invoice balance");
+    }
+
+    const payment = {
+      amount,
+      paid_at: new Date(),
+      recorded_by: userId,
+      ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+    };
+    const currentPaidField = invoice.paid_amount;
+    const filter = {
+      _id: invoice._id,
+      status: "completed",
+      ...(currentPaidField === undefined
+        ? { paid_amount: { $exists: false } }
+        : { paid_amount: currentPaidField }),
+    };
+
+    if (idempotencyKey) {
+      filter["payments.idempotency_key"] = { $ne: idempotencyKey };
+    }
+
+    const updated = await Invoice.findOneAndUpdate(
+      filter,
+      {
+        $set: { paid_amount: money(paidBefore + amount) },
+        $push: { payments: payment },
+      },
+      { new: true, runValidators: true }
+    )
+      .select(
+        "invoice_number grand_total total paid_amount payments"
+      )
+      .lean();
+
+    if (updated) {
+      const paidAmount = getRecordedPaymentTotal(updated.payments);
+      const updatedTotal = Number(
+        updated.grand_total ?? updated.total ?? 0
+      );
+      const updatedPayments = updated.payments || [];
+      const recordedPayment = updatedPayments[updatedPayments.length - 1];
+
+      return {
+        invoice_id: String(updated._id),
+        invoice_number: updated.invoice_number,
+        total: updatedTotal,
+        paid_amount: paidAmount,
+        pending_amount: money(Math.max(0, updatedTotal - paidAmount)),
+        payment: paymentDTO(recordedPayment),
+        payments: (updated.payments || []).map(paymentDTO),
+        duplicate: false,
+      };
+    }
+  }
+
+  throw httpError(
+    409,
+    "Invoice balance changed while recording payment. Please retry."
+  );
+}
+
 // --------------------------------------------------
 // EDIT INVOICE
 // --------------------------------------------------
@@ -737,6 +955,13 @@ export async function editInvoice(id, input, user) {
 
   if (invoice.status !== "completed") {
     throw httpError(409, "Only completed invoices can be edited");
+  }
+
+  if ((invoice.payments || []).length > 0) {
+    throw httpError(
+      409,
+      "Invoices with recorded payments cannot be edited"
+    );
   }
 
   const originalData = invoice.toObject();
@@ -762,12 +987,29 @@ export async function editInvoice(id, input, user) {
       delete replacementData[key];
     }
 
-    invoice.set(replacementData);
-    await invoice.save();
+    const updatedInvoice = await Invoice.findOneAndUpdate(
+      {
+        _id: invoice._id,
+        status: "completed",
+        $or: [
+          { payments: { $exists: false } },
+          { payments: { $size: 0 } },
+        ],
+      },
+      { $set: replacementData },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedInvoice) {
+      throw httpError(
+        409,
+        "Invoice was changed or has a payment. Please reload and retry."
+      );
+    }
 
     await Invoice.deleteOne({ _id: replacement._id });
 
-    return invoice;
+    return updatedInvoice;
   } catch (error) {
     try {
       if (replacement) {
@@ -778,11 +1020,15 @@ export async function editInvoice(id, input, user) {
       const originalInvoice = await Invoice.findById(id);
 
       if (originalInvoice) {
-        originalInvoice.set(originalData);
-        await originalInvoice.save();
-      }
+        if ((originalInvoice.payments || []).length === 0) {
+          originalInvoice.set(originalData);
+          await originalInvoice.save();
+        }
 
-      await deductInvoiceStock(originalData);
+        await deductInvoiceStock(originalInvoice);
+      } else {
+        await deductInvoiceStock(originalData);
+      }
     } catch (rollbackError) {
       console.error(
         "CRITICAL: Invoice edit rollback failed:",
@@ -813,6 +1059,13 @@ export async function cancelInvoice(id, cancelReason = "", user) {
     throw httpError(404, "Invoice not found");
   }
 
+  if ((invoice.payments || []).length > 0) {
+    throw httpError(
+      409,
+      "Invoices with recorded payments cannot be cancelled"
+    );
+  }
+
   if (invoice.status === "cancelled") {
     throw httpError(409, "Invoice is already cancelled");
   }
@@ -821,26 +1074,38 @@ export async function cancelInvoice(id, cancelReason = "", user) {
     throw httpError(409, "Only completed invoices can be cancelled");
   }
 
-  const originalStatus = invoice.status;
-  const originalReason = invoice.cancel_reason;
-
   await restoreInvoiceStock(invoice);
 
   try {
-    invoice.status = "cancelled";
-    invoice.cancel_reason = cancelReason.trim();
+    const cancelledInvoice = await Invoice.findOneAndUpdate(
+      {
+        _id: invoice._id,
+        status: "completed",
+        $or: [
+          { payments: { $exists: false } },
+          { payments: { $size: 0 } },
+        ],
+      },
+      {
+        $set: {
+          status: "cancelled",
+          cancel_reason: cancelReason.trim(),
+        },
+      },
+      { new: true, runValidators: true }
+    );
 
-    await invoice.save();
+    if (!cancelledInvoice) {
+      throw httpError(
+        409,
+        "Invoice was paid or changed and cannot be cancelled"
+      );
+    }
 
-    return invoice;
+    return cancelledInvoice;
   } catch (error) {
     try {
       await deductInvoiceStock(invoice);
-
-      invoice.status = originalStatus;
-      invoice.cancel_reason = originalReason;
-
-      await invoice.save();
     } catch (rollbackError) {
       console.error(
         "CRITICAL: Invoice cancellation rollback failed:",
@@ -867,6 +1132,13 @@ export async function deleteInvoice(id) {
     throw httpError(404, "Invoice not found");
   }
 
+  if ((invoice.payments || []).length > 0) {
+    throw httpError(
+      409,
+      "Invoices with recorded payments cannot be deleted"
+    );
+  }
+
   const shouldRestoreStock = invoice.status === "completed";
 
   if (shouldRestoreStock) {
@@ -874,10 +1146,19 @@ export async function deleteInvoice(id) {
   }
 
   try {
-    const result = await Invoice.deleteOne({ _id: invoice._id });
+    const result = await Invoice.deleteOne({
+      _id: invoice._id,
+      $or: [
+        { payments: { $exists: false } },
+        { payments: { $size: 0 } },
+      ],
+    });
 
     if (result.deletedCount !== 1) {
-      throw httpError(409, "Invoice could not be deleted");
+      throw httpError(
+        409,
+        "Invoice has a payment or was changed and cannot be deleted"
+      );
     }
 
     return {

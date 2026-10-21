@@ -31,6 +31,24 @@ export const getCustomers = async (req, res) => {
   }
 };
 
+// GET /api/customers/pending?search=
+export const getPendingCustomers = async (req, res) => {
+  try {
+    const result = await customerService.listPendingCustomers(
+      String(req.query.search || "")
+    );
+
+    return res.status(200).json({
+      success: true,
+      summary: result.summary,
+      count: result.data.length,
+      data: result.data,
+    });
+  } catch (error) {
+    return handleError(res, error, "GET PENDING CUSTOMERS ERROR");
+  }
+};
+
 // GET /api/customers/:id
 export const getCustomer = async (req, res) => {
   try {
