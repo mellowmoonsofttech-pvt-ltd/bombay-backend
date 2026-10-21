@@ -1132,13 +1132,6 @@ export async function deleteInvoice(id) {
     throw httpError(404, "Invoice not found");
   }
 
-  if ((invoice.payments || []).length > 0) {
-    throw httpError(
-      409,
-      "Invoices with recorded payments cannot be deleted"
-    );
-  }
-
   const shouldRestoreStock = invoice.status === "completed";
 
   if (shouldRestoreStock) {
@@ -1146,18 +1139,19 @@ export async function deleteInvoice(id) {
   }
 
   try {
-    const result = await Invoice.deleteOne({
+    const deleteFilter = {
       _id: invoice._id,
-      $or: [
-        { payments: { $exists: false } },
-        { payments: { $size: 0 } },
-      ],
-    });
+      status: invoice.status,
+      updatedAt: invoice.updatedAt
+        ? invoice.updatedAt
+        : { $exists: false },
+    };
+    const result = await Invoice.deleteOne(deleteFilter);
 
     if (result.deletedCount !== 1) {
       throw httpError(
         409,
-        "Invoice has a payment or was changed and cannot be deleted"
+        "Invoice was changed and cannot be deleted. Please reload and retry."
       );
     }
 
