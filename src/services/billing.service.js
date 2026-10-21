@@ -957,13 +957,6 @@ export async function editInvoice(id, input, user) {
     throw httpError(409, "Only completed invoices can be edited");
   }
 
-  if ((invoice.payments || []).length > 0) {
-    throw httpError(
-      409,
-      "Invoices with recorded payments cannot be edited"
-    );
-  }
-
   const originalData = invoice.toObject();
 
   await restoreInvoiceStock(invoice);
@@ -983,19 +976,21 @@ export async function editInvoice(id, input, user) {
       "updatedAt",
       "status",
       "cancel_reason",
+      "paid_amount",
+      "payments",
     ]) {
       delete replacementData[key];
     }
 
+    const editFilter = {
+      _id: invoice._id,
+      status: "completed",
+      updatedAt: invoice.updatedAt
+        ? invoice.updatedAt
+        : { $exists: false },
+    };
     const updatedInvoice = await Invoice.findOneAndUpdate(
-      {
-        _id: invoice._id,
-        status: "completed",
-        $or: [
-          { payments: { $exists: false } },
-          { payments: { $size: 0 } },
-        ],
-      },
+      editFilter,
       { $set: replacementData },
       { new: true, runValidators: true }
     );
@@ -1003,7 +998,7 @@ export async function editInvoice(id, input, user) {
     if (!updatedInvoice) {
       throw httpError(
         409,
-        "Invoice was changed or has a payment. Please reload and retry."
+        "Invoice was changed while editing. Please reload and retry."
       );
     }
 
@@ -1059,13 +1054,6 @@ export async function cancelInvoice(id, cancelReason = "", user) {
     throw httpError(404, "Invoice not found");
   }
 
-  if ((invoice.payments || []).length > 0) {
-    throw httpError(
-      409,
-      "Invoices with recorded payments cannot be cancelled"
-    );
-  }
-
   if (invoice.status === "cancelled") {
     throw httpError(409, "Invoice is already cancelled");
   }
@@ -1077,15 +1065,15 @@ export async function cancelInvoice(id, cancelReason = "", user) {
   await restoreInvoiceStock(invoice);
 
   try {
+    const cancellationFilter = {
+      _id: invoice._id,
+      status: "completed",
+      updatedAt: invoice.updatedAt
+        ? invoice.updatedAt
+        : { $exists: false },
+    };
     const cancelledInvoice = await Invoice.findOneAndUpdate(
-      {
-        _id: invoice._id,
-        status: "completed",
-        $or: [
-          { payments: { $exists: false } },
-          { payments: { $size: 0 } },
-        ],
-      },
+      cancellationFilter,
       {
         $set: {
           status: "cancelled",
@@ -1098,7 +1086,7 @@ export async function cancelInvoice(id, cancelReason = "", user) {
     if (!cancelledInvoice) {
       throw httpError(
         409,
-        "Invoice was paid or changed and cannot be cancelled"
+        "Invoice was changed while cancelling. Please reload and retry."
       );
     }
 
