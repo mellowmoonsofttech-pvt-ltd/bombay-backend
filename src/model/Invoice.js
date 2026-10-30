@@ -104,7 +104,9 @@
       },
       customer_mobile: {
         type: String,
-        required: true,
+        required() {
+          return this.get("customer_name") !== "Walk-in";
+        },
         trim: true,
         maxlength: 16,
       },
@@ -130,6 +132,18 @@
       discount_value: {
         type: Number,
         min: 0,
+        default: 0,
+      },
+      tailor_amount: {
+        type: Number,
+        min: 0,
+        max: 100000000,
+        default: 0,
+      },
+      handwork_amount: {
+        type: Number,
+        min: 0,
+        max: 100000000,
         default: 0,
       },
       subtotal: {

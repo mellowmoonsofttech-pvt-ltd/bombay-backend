@@ -14,6 +14,24 @@ const monetaryAmount = z
     "Payment amount must not have more than two decimal places"
   );
 
+function hasAtMostTwoDecimalPlaces(amount) {
+  const scaled = amount * 100;
+  const tolerance =
+    Number.EPSILON * Math.max(1, Math.abs(scaled)) * 2;
+
+  return Math.abs(scaled - Math.round(scaled)) <= tolerance;
+}
+
+const invoiceChargeAmount = z
+  .number()
+  .finite()
+  .min(0)
+  .max(100000000)
+  .refine(
+    hasAtMostTwoDecimalPlaces,
+    "Amount must not have more than two decimal places"
+  );
+
 export const invoicePaymentSchema = z.union([
   z
     .object({
@@ -56,7 +74,6 @@ export const createInvoiceSchema = z.object({
   customer_mobile: z
     .string()
     .trim()
-    .min(1, "Customer mobile is required")
     .max(16),
 
   price_type: z.enum(["retail", "wholesale"]).optional(),
@@ -81,7 +98,24 @@ export const createInvoiceSchema = z.object({
     .optional()
     .default(0),
 
+  tailor_amount: invoiceChargeAmount.optional(),
+
+  handwork_amount: invoiceChargeAmount.optional(),
+
   apply_gst: z.boolean().optional().default(false),
 
   items: z.array(invoiceItemSchema).min(1).max(200),
-});
+})
+  .strict()
+  .superRefine((invoice, context) => {
+    if (
+      invoice.customer_name !== "Walk-in" &&
+      !invoice.customer_mobile
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["customer_mobile"],
+        message: "Customer mobile is required",
+      });
+    }
+  });

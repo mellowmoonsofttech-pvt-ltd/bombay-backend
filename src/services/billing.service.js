@@ -14,6 +14,13 @@ function money(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
+function isWalkInCustomer(input) {
+  return (
+    String(input.customer_name || "").trim() === "Walk-in" &&
+    !String(input.customer_mobile ?? "").trim()
+  );
+}
+
 // --------------------------------------------------
 // CUSTOMER CREATE / UPDATE
 // --------------------------------------------------
@@ -345,6 +352,8 @@ async function executeInvoice(input, user) {
   }
 
   const applyGst = input.apply_gst === true;
+  const tailorAmount = input.tailor_amount ?? 0;
+  const handworkAmount = input.handwork_amount ?? 0;
 
   const discountType =
     input.discount_type === "fixed"
@@ -408,7 +417,7 @@ async function executeInvoice(input, user) {
     throw httpError(400, "Customer name is required");
   }
 
-  if (!input.customer_mobile?.trim()) {
+  if (!input.customer_mobile?.trim() && !isWalkInCustomer(input)) {
     throw httpError(400, "Customer mobile is required");
   }
 
@@ -556,7 +565,10 @@ async function executeInvoice(input, user) {
   });
 
   const grandTotal = money(
-    Math.max(0, subtotal - discountAmount) + gstAmount
+    Math.max(0, subtotal - discountAmount) +
+      gstAmount +
+      tailorAmount +
+      handworkAmount
   );
 
   let stockDebited = false;
@@ -569,7 +581,9 @@ async function executeInvoice(input, user) {
     stockDebited = true;
 
     const invoiceNumber = await generateInvoiceNumber();
-    const customer = await upsertInvoiceCustomer(input, user);
+    const customer = isWalkInCustomer(input)
+      ? { name: "Walk-in", mobile: "", _id: null }
+      : await upsertInvoiceCustomer(input, user);
 
     const invoiceData = {
       invoice_number: invoiceNumber,
@@ -580,6 +594,8 @@ async function executeInvoice(input, user) {
       payment_method: input.payment_method,
       discount_type: discountType,
       discount_value: discountValue,
+      tailor_amount: tailorAmount,
+      handwork_amount: handworkAmount,
       subtotal,
       discount_amount: discountAmount,
       apply_gst: applyGst,
@@ -635,6 +651,8 @@ export async function getInvoiceById(id) {
   return {
     ...invoice,
     id: String(invoice._id),
+    tailor_amount: Number(invoice.tailor_amount ?? 0),
+    handwork_amount: Number(invoice.handwork_amount ?? 0),
   };
 }
 
@@ -689,7 +707,7 @@ export async function getInvoices({ from, to, search = "" } = {}) {
 
   const invoices = await Invoice.find(filter)
     .select(
-      "invoice_number customer_name customer_mobile payment_method status subtotal discount_amount gst_amount grand_total total created_by createdAt updatedAt"
+      "invoice_number customer_name customer_mobile payment_method status subtotal discount_amount gst_amount tailor_amount handwork_amount grand_total total created_by createdAt updatedAt"
     )
     .sort({ createdAt: -1 })
     .limit(1000)
@@ -715,6 +733,8 @@ export async function getInvoices({ from, to, search = "" } = {}) {
       ...invoice,
       id: String(invoice._id),
       created_at: invoice.createdAt,
+      tailor_amount: Number(invoice.tailor_amount ?? 0),
+      handwork_amount: Number(invoice.handwork_amount ?? 0),
     })),
     summary,
   };
@@ -964,7 +984,16 @@ export async function editInvoice(id, input, user) {
   let replacement = null;
 
   try {
-    replacement = await executeInvoice(input, user);
+    replacement = await executeInvoice(
+      {
+        ...input,
+        tailor_amount:
+          input.tailor_amount ?? invoice.tailor_amount ?? 0,
+        handwork_amount:
+          input.handwork_amount ?? invoice.handwork_amount ?? 0,
+      },
+      user
+    );
     const replacementData = replacement.toObject();
 
     for (const key of [
